@@ -49,7 +49,7 @@ void sig_handler (int sig) {
 
 void usage (char* arg0) 
 {
-    fprintf(stderr, "\nUsage: %s [flags] pru0_code.bin pru1_code.bin\n", basename(arg0));
+    fprintf(stderr, "\nUsage: %s [flags]\n", basename(arg0));
 
     fprintf(stderr, "\n"
           "  -0 channel 0 offset\n"
