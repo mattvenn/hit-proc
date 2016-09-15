@@ -24,7 +24,7 @@ using namespace std;
 #define CHANNELS 2
 #define SAMPLERATE 2000000.0
 #define MAX_SAMP_R 4096
-#define VOLTS_PER_BIT 0.0012
+#define VOLTS_PER_BIT 0.001221
 
 struct hit_t {
     int channel;
@@ -35,7 +35,7 @@ struct hit_t {
 } hits [MAX_HITS];
 
 void print_hit(hit_t hit);
-int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp);
+int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp);
 static double triangleIntegral(int a, int b);
 
 // Used by sig_handler to tell us when to shutdown
@@ -52,13 +52,14 @@ void usage (char* arg0)
     fprintf(stderr, "\nUsage: %s [flags]\n", basename(arg0));
 
     fprintf(stderr, "\n"
-          "  -0 channel 0 offset\n"
-          "  -1 channel 1 offset\n"
-          "  -s start thresh\n"
+          "  -0 channel 0 offset (mv)\n"
+          "  -1 channel 1 offset (mv)\n"
+          "  -s start thresh (mv)\n"
+          "  -e end thresh (mv)\n"
+          "  -l number of samples signal has to be lower than end thresh to end hit\n"
           "  -p number of samples hit starts before threshold\n"
-          "  -e end thresh\n"
           "  -i filename\n"
-          "  -b samples to read\n\n"
+          "  -b samples to read per chunk\n\n"
          );
     exit(EXIT_FAILURE);
 }
@@ -70,13 +71,14 @@ int main (int argc, char **argv)
     int chan1_zero = 0;
     int start_thresh = 1000;
     int end_thresh = 500;
+    int end_samp = 0;
     int pre_samp = 0;
     int samples_to_read = 1024;
     int num_hits = 0;
     string filename = "-";
 
     // Process command line flags
-    while (-1 != (ch = getopt(argc, argv, "p:i:0:1:s:e:b:"))) 
+    while (-1 != (ch = getopt(argc, argv, "p:i:0:1:b:s:e:l:"))) 
     {
     switch (ch) 
     {
@@ -116,11 +118,20 @@ int main (int argc, char **argv)
                 usage(argv[0]);
             }
             break;
+        case 'l':
+            end_samp = strtod(optarg, NULL);
+            break;
         default:
             usage(argv[0]);
             break;
         }
     }
+
+    // convert input values from mv to sample values
+    start_thresh = (start_thresh / 1000.0) / VOLTS_PER_BIT;
+    end_thresh = (end_thresh / 1000.0) / VOLTS_PER_BIT;
+    chan0_zero = (chan0_zero / 1000.0) / VOLTS_PER_BIT;
+    chan1_zero = (chan1_zero / 1000.0) / VOLTS_PER_BIT;
 
     if (argc - optind != 0) 
     {
@@ -139,7 +150,7 @@ int main (int argc, char **argv)
         if (file.is_open())
         {
             file.seekg (0, ios::beg);
-            num_hits = process(file, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp);
+            num_hits = process(file, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp);
         }
         else
         {
@@ -152,7 +163,7 @@ int main (int argc, char **argv)
         // No input file has been passed in the command line.
         // Read the data from stdin (std::cin).
         cout << "reading from stdin\n";
-        num_hits = process(std::cin, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp);
+        num_hits = process(std::cin, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp);
     }
 
     cout << "found " << num_hits << " hits:\n";
@@ -162,12 +173,13 @@ int main (int argc, char **argv)
     return 0;
 }
 
-int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp)
+int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp)
 {
     long sample_number = 0;
     uint16_t array[samples_to_read];
     int hit_max[CHANNELS] = {0, 0};
     int last_sample[CHANNELS] = {0, 0};
+    int end_samps[CHANNELS] = {0, 0};
     int hit_start[CHANNELS] = {0, 0};
     int hit_started[CHANNELS] = {0, 0};
     double hit_integral[CHANNELS] = {0, 0};
@@ -212,19 +224,24 @@ int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, 
                 // finish
                 if(sample < end_thresh)
                 {
-                    cout << "hit ended at " << sample_number << " on channel " << channel << " val " << sample << "\n";
-                    hit_started[channel] = 0;
-                    // add struct
-                    hits[hit_number].channel = channel;
-                    hits[hit_number].max = hit_max[channel];
-                    hits[hit_number].start = hit_start[channel] - pre_samp;
-                    hits[hit_number].end = sample_number;
-                    hits[hit_number].integral = hit_integral[channel];
-                    hit_number ++;
-                    if(hit_number > MAX_HITS)
+                    end_samps[channel] ++;
+                    if(end_samps[channel] > end_samp)
                     {
-                        cout << "ran out of hits\n";
-                        break;
+                        cout << "hit ended at " << sample_number << " on channel " << channel << " val " << sample << "\n";
+                        hit_started[channel] = 0;
+                        end_samps[channel] = 0;
+                        // add struct
+                        hits[hit_number].channel = channel;
+                        hits[hit_number].max = hit_max[channel];
+                        hits[hit_number].start = hit_start[channel] - pre_samp;
+                        hits[hit_number].end = sample_number;
+                        hits[hit_number].integral = hit_integral[channel];
+                        hit_number ++;
+                        if(hit_number > MAX_HITS)
+                        {
+                            cout << "ran out of hits\n";
+                            break;
+                        }
                     }
                 }
             }
