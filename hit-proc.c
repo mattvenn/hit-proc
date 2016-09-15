@@ -32,10 +32,11 @@ struct hit_t {
     long start;
     long end;
     double integral;
+    bool cutoff;
 } hits [MAX_HITS];
 
 void print_hit(hit_t hit);
-int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp);
+int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp, int max_samples);
 static double triangleIntegral(int a, int b);
 
 // Used by sig_handler to tell us when to shutdown
@@ -59,7 +60,8 @@ void usage (char* arg0)
           "  -l number of samples signal has to be lower than end thresh to end hit\n"
           "  -p number of samples hit starts before threshold\n"
           "  -i filename\n"
-          "  -b samples to read per chunk\n\n"
+          "  -b samples to read per chunk\n"
+          "  -m maximum samples to read before ending a hit\n\n"
          );
     exit(EXIT_FAILURE);
 }
@@ -73,12 +75,13 @@ int main (int argc, char **argv)
     int end_thresh = 500;
     int end_samp = 0;
     int pre_samp = 0;
+    int max_samples = 0;
     int samples_to_read = 1024;
     int num_hits = 0;
     string filename = "-";
 
     // Process command line flags
-    while (-1 != (ch = getopt(argc, argv, "p:i:0:1:b:s:e:l:"))) 
+    while (-1 != (ch = getopt(argc, argv, "p:i:0:1:b:s:e:l:m:"))) 
     {
     switch (ch) 
     {
@@ -121,6 +124,9 @@ int main (int argc, char **argv)
         case 'l':
             end_samp = strtod(optarg, NULL);
             break;
+        case 'm':
+            max_samples = strtod(optarg, NULL);
+            break;
         default:
             usage(argv[0]);
             break;
@@ -150,7 +156,7 @@ int main (int argc, char **argv)
         if (file.is_open())
         {
             file.seekg (0, ios::beg);
-            num_hits = process(file, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp);
+            num_hits = process(file, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp, max_samples);
         }
         else
         {
@@ -163,7 +169,7 @@ int main (int argc, char **argv)
         // No input file has been passed in the command line.
         // Read the data from stdin (std::cin).
         cout << "reading from stdin\n";
-        num_hits = process(std::cin, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp);
+        num_hits = process(std::cin, chan0_zero, chan1_zero, start_thresh, end_thresh, samples_to_read, pre_samp, end_samp, max_samples);
     }
 
     cout << "found " << num_hits << " hits:\n";
@@ -173,7 +179,7 @@ int main (int argc, char **argv)
     return 0;
 }
 
-int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp)
+int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, int end_thresh, int samples_to_read, int pre_samp, int end_samp, int max_samples)
 {
     long sample_number = 0;
     uint16_t array[samples_to_read];
@@ -186,6 +192,7 @@ int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, 
     int hit_number = 0;
     int zero[CHANNELS] = {chan0_zero, chan1_zero};
     int channel = 0;
+    bool cutoff = false;
     uint16_t sample = 0;
 
     cout << "starting\n";
@@ -218,30 +225,37 @@ int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, 
             {
                 // calculate integral
                 hit_integral[channel] += triangleIntegral(last_sample[channel], sample);
+
                 // do max
                 if(sample > hit_max[channel])
                     hit_max[channel] = sample;
-                // finish
+
+                // hits can be cutoff if hit is too long
+                if(max_samples > 0)
+                    cutoff = (sample_number - hit_start[channel]) > max_samples;
+
+                // hits can be ended if sample is lower than start thresh for long enough
                 if(sample < end_thresh)
-                {
                     end_samps[channel] ++;
-                    if(end_samps[channel] > end_samp)
+
+                // finish if enough low samples taken or cutoff early
+                if(end_samps[channel] > end_samp || cutoff )
+                {
+                    cout << "hit ended at " << sample_number << " on channel " << channel << " val " << sample << "\n";
+                    hit_started[channel] = 0;
+                    end_samps[channel] = 0;
+                    // add struct
+                    hits[hit_number].channel = channel;
+                    hits[hit_number].max = hit_max[channel];
+                    hits[hit_number].start = hit_start[channel] - pre_samp;
+                    hits[hit_number].end = sample_number;
+                    hits[hit_number].integral = hit_integral[channel];
+                    hits[hit_number].cutoff = cutoff;
+                    hit_number ++;
+                    if(hit_number > MAX_HITS)
                     {
-                        cout << "hit ended at " << sample_number << " on channel " << channel << " val " << sample << "\n";
-                        hit_started[channel] = 0;
-                        end_samps[channel] = 0;
-                        // add struct
-                        hits[hit_number].channel = channel;
-                        hits[hit_number].max = hit_max[channel];
-                        hits[hit_number].start = hit_start[channel] - pre_samp;
-                        hits[hit_number].end = sample_number;
-                        hits[hit_number].integral = hit_integral[channel];
-                        hit_number ++;
-                        if(hit_number > MAX_HITS)
-                        {
-                            cout << "ran out of hits\n";
-                            break;
-                        }
+                        cout << "ran out of hits\n";
+                        break;
                     }
                 }
             }
@@ -267,5 +281,6 @@ void print_hit(hit_t hit)
     cout << "max    " << std::setprecision(6) << hit.max * VOLTS_PER_BIT << "(v)\n";
     cout << "len    " << std::setprecision(6) << 1000000 * (hit.end / SAMPLERATE- hit.start / SAMPLERATE)<< "(us)\n";
     cout << "integ  " << std::setprecision(6) << hit.integral * (VOLTS_PER_BIT/2) << "(uVs)\n"; // 2 instead of 2e6 so we get the result in uVs not Vs.
+    cout << "cutoff " << hit.cutoff << "\n";
 
 }
