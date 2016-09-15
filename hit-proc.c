@@ -184,10 +184,9 @@ int process(std::istream& in, int chan0_zero, int chan1_zero, int start_thresh, 
             channel = i % 2;
             sample = array[i];
             if(sample < zero[channel])
-            {
-                cout << "sample too low at " << sample_number << " on channel " << channel << " val " << sample << "\n";
-            }
-            sample -= zero[channel];
+                sample = 0;
+            else
+                sample -= zero[channel];
             last_sample[channel] = sample;
 
             // if hit hasn't started
@@ -250,6 +249,6 @@ void print_hit(hit_t hit)
     cout << "end    " << std::setprecision(6) << hit.end / SAMPLERATE << "(s)\n";
     cout << "max    " << std::setprecision(6) << hit.max * VOLTS_PER_BIT << "(v)\n";
     cout << "len    " << std::setprecision(6) << 1000000 * (hit.end / SAMPLERATE- hit.start / SAMPLERATE)<< "(us)\n";
-    cout << "integ  " << std::setprecision(6) << hit.integral / (SAMPLERATE*VOLTS_PER_BIT)<< "(vus)\n";
+    cout << "integ  " << std::setprecision(6) << hit.integral * (VOLTS_PER_BIT/2) << "(uVs)\n"; // 2 instead of 2e6 so we get the result in uVs not Vs.
 
 }
